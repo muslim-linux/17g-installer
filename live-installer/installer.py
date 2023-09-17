@@ -13,7 +13,7 @@ gettext.install("live-installer", "/usr/share/locale")
 
 NON_LATIN_KB_LAYOUTS = ['am', 'af', 'ara', 'ben', 'bd', 'bg', 'bn', 'bt', 'by', 'deva', 'et', 'ge', 'gh', 'gn', 'gr',
                         'guj', 'guru', 'id', 'il', 'iku', 'in', 'iq', 'ir', 'kan', 'kg', 'kh', 'kz', 'la', 'lao', 'lk',
-                        'ma', 'mk', 'mm', 'mn', 'mv', 'mal', 'my', 'np', 'ori', 'pk', 'ru', 'rs', 'scc', 'sy', 'syr', 
+                        'ma', 'mk', 'mm', 'mn', 'mv', 'mal', 'my', 'np', 'ori', 'pk', 'ru', 'rs', 'scc', 'sy', 'syr',
                         'tel', 'th', 'tj', 'tam', 'tz', 'ua', 'uz']
 
 
@@ -93,7 +93,7 @@ class InstallerEngine:
             self.mount_partitions()
         if os.path.isdir("/lib/live-installer"):
             os.chdir("/lib/live-installer")
-                    
+
         # Custom commands
         self.do_hook_commands("pre_rsync_hook")
 
@@ -158,11 +158,11 @@ class InstallerEngine:
                         self.our_current = min(
                             self.our_current + 1, self.our_total)
                         self.update_progress(_("Copying /%s") % line)
-               
+
 
         # Custom commands
         self.do_hook_commands("post_rsync_hook")
-        
+
         # Steps:
         self.our_total = 12
         self.our_current = 0
@@ -303,7 +303,7 @@ class InstallerEngine:
         # replae this with changeable function
         partitioning.full_disk_format(disk_device,
             create_boot = (self.auto_boot_partition is not None),
-            create_swap = (self.auto_swap_partition is not None), 
+            create_swap = (self.auto_swap_partition is not None),
             swap_size   = self.setup.swap_size)
 
         # Encrypt root partition
@@ -748,23 +748,6 @@ class InstallerEngine:
             newconsolefh.write("keymap=\"{}{}\"\n".format(
                 self.setup.keyboard_layout, self.setup.keyboard_variant))
             newconsolefh.close()
-
-        # Keyboard settings (gnome)
-        if os.path.exists("/target/usr/share/glib-2.0/schemas/org.gnome.desktop.input-sources.gschema.xml"):
-            with open("/target/usr/share/glib-2.0/schemas/99_17g-gnome-keyboard-config.gschema.override", "w") as schema:
-                layouts, variants = self.setup.keyboard_layout.split(","), self.setup.keyboard_variant.split(",")
-
-                schema.write("[org.gnome.desktop.input-sources]\n")
-
-                output = "sources = ["
-                for i in range(2 if "," in self.setup.keyboard_layout else 1):
-                    output += "('xkb', '" + layouts[i]
-                    if variants[i]:
-                        output += "+" + variants[i]
-                    output += "')" + (", " if i == 0 and "," in self.setup.keyboard_layout else "")
-                schema.write(output + "]")
-            self.run("chroot||glib-compile-schemas /usr/share/glib-2.0/schemas/",vital=False)
-
 
         # minimize if enabled
         if self.setup.minimal_installation:
