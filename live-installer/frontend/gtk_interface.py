@@ -69,7 +69,7 @@ class InstallerWindow:
         # slide gtk images
         self.gtkimages = []
         self.gtkpixbufs = []
-        
+
         # user list
         validate.userlist = common.get_user_list()
 
@@ -97,7 +97,7 @@ class InstallerWindow:
         self.builder.get_object("button_quit").connect(
             "clicked", self.quit_cb)
 
-        
+
         self.builder.get_object("check_eula").connect(
             "clicked", self.assign_eula)
         self.builder.get_object("text_eula").get_buffer().set_text(open("./branding/eula.txt","r").read())
@@ -137,6 +137,7 @@ class InstallerWindow:
 
         # build timezones
         timezones.build_timezones(self)
+        self.timezone_init()
 
         # type page
         model = Gtk.ListStore(str, str)
@@ -322,10 +323,7 @@ class InstallerWindow:
         # build partition list
         self.should_pulse = False
 
-        # build options page
-        if config.get("skip_options", False):
-            obox.hide()
-        
+
         if not config.get("use_swap",False):
             self.builder.get_object("check_swap").hide()
 
@@ -336,7 +334,7 @@ class InstallerWindow:
         self.builder.get_object("button_back").set_sensitive(False)
         self.slideshow()
         self.window.set_position(Gtk.WindowPosition.CENTER)
-        self.window.show_all()
+        self.window.show()
         if not fullscreen and config.get("set_alternative_ui", False):
             self.builder.get_object("button_quit").hide()
         if fullscreen:
@@ -395,7 +393,7 @@ class InstallerWindow:
                     True # dummy action
             if self.setup.winroot and (
                     not self.setup.gptonefi or self.setup.winefi):
-                self.builder.get_object("box_replace_win").show_all()
+                self.builder.get_object("box_replace_win").show()
 
         self.builder.get_object("label_copyright").set_label(
             config.get("copyright", "17g Developer Team"))
@@ -424,6 +422,18 @@ class InstallerWindow:
         if self.testmode:
             self.builder.get_object("label_install_progress").set_text("text "*100)
 
+    def timezone_init(self):
+        lang_country_code = self.setup.language.split('_')[-1]
+        for value in (self.cur_timezone,      # timezone guessed from IP
+                      self.cur_country_code,  # otherwise pick country from IP
+                      lang_country_code):     # otherwise use country from language selection
+            if not value:
+                continue
+            for row in timezones.timezones:
+                if value in row:
+                    timezones.select_timezone(row)
+                    break
+            break
 
     def manually_edit_partitions(self,widget):
         """ Edit only known disks, selected one first """
@@ -597,8 +607,8 @@ class InstallerWindow:
     def view_password_text(self,entry, icon_pos, event):
         entry.set_visibility(True)
         entry.set_icon_from_icon_name(0,"view-conceal-symbolic")
-        
-        
+
+
     def hide_password_text(self,entry, icon_pos, event):
         entry.set_visibility(False)
         entry.set_icon_from_icon_name(0,"view-reveal-symbolic")
@@ -642,11 +652,11 @@ class InstallerWindow:
 
         self.week_password = (weekMessage != "")
         errorFound = (password_error != None)
-        
+
         if errorFound:
             wlabel.set_text("")
             self.week_password = False
-        
+
         self.week_warning = weekMessage
         self.assign_entry("entry_password", errorFound ,self.week_password)
 
@@ -752,7 +762,6 @@ class InstallerWindow:
         self.setup.real_name = self.builder.get_object("entry_name").get_text()
         self.setup.swap_size = int(self.builder.get_object("swap_size").get_text())*1024
 
-    @asynchronous
     def build_lang_list(self):
 
         self.cur_timezone = config.get('default_timezone', "Europe/London")
@@ -815,7 +824,6 @@ class InstallerWindow:
         if config.get("allow_auto_novariant", True):
             self.setup.keyboard_variant = ""
 
-    @asynchronous
     def build_kb_lists(self):
         ''' Do some xml kung-fu and load the keyboard stuffs '''
         # Determine the layouts in use
@@ -907,7 +915,7 @@ class InstallerWindow:
         start = self.selected_partition.partition.geometry.start
         end = self.selected_partition.partition.geometry.end
         mbr = self.selected_partition.mbr
-        if QuestionDialog(_("Are you sure?"), 
+        if QuestionDialog(_("Are you sure?"),
             _("New partition will created at {}").format(mbr)):
             command = "parted -s {} mkpart primary ext4 {}s {}s".format(mbr,start,end)
             def update_partition_menu(pid, status):
@@ -922,7 +930,7 @@ class InstallerWindow:
         path = self.selected_partition.path
         mbr = self.selected_partition.mbr
         partnum = partitioning.find_partition_number(path)
-        if QuestionDialog(_("Are you sure?"), 
+        if QuestionDialog(_("Are you sure?"),
             _("Partition {} will removed from {}.").format(path,mbr)):
             def update_partition_menu(pid, status):
                 partitioning.build_partitions(self)
@@ -1051,7 +1059,7 @@ class InstallerWindow:
         command = "setxkbmap -layout '%s' -variant '%s'" % (
             self.setup.keyboard_layout, self.setup.keyboard_variant)
         os.system(command)
-        
+
         if config.get("keyboard_preview", True):
             self.keyboardview.update(self.setup.keyboard_layout, self.setup.keyboard_variant)
 
@@ -1073,7 +1081,7 @@ class InstallerWindow:
         if self.testmode:
             self.builder.get_object("notebook1").set_visible_child_name(str(nex))
             return
-        
+
         if index == self.PAGE_LANGUAGE:
             if goback:
                 True # Do nothing
@@ -1081,19 +1089,6 @@ class InstallerWindow:
                 WarningDialog(_("Installer"), _(
                     "Please choose a language"))
                 return
-            else:
-                self.set_language(self.setup.language)
-                lang_country_code = self.setup.language.split('_')[-1]
-                for value in (self.cur_timezone,      # timezone guessed from IP
-                              self.cur_country_code,  # otherwise pick country from IP
-                              lang_country_code):     # otherwise use country from language selection
-                    if not value:
-                        continue
-                    for row in timezones.timezones:
-                        if value in row:
-                            timezones.select_timezone(row)
-                            break
-                    break
         elif index == self.PAGE_TIMEZONE:
             if ("_" in self.setup.language):
                 country_code = self.setup.language.split("_")[1]
@@ -1258,7 +1253,7 @@ class InstallerWindow:
                 row = model[active]
                 self.setup.disk = row[1]
                 self.setup.diskname = row[0]
-        
+
             if self.setup.disk is None:
                 errorFound = True
                 errorMessage = _("Please select a disk.")
@@ -1278,6 +1273,7 @@ class InstallerWindow:
                     partitioning.build_partitions(self)
                     partitioning.build_grub_partitions()
                     if config.get("skip_user", False):
+                        self.show_overview()
                         self.activate_page(self.PAGE_OVERVIEW)
                     else:
                         self.activate_page(self.PAGE_USER)
@@ -1340,6 +1336,8 @@ class InstallerWindow:
                     sel = nex
             if sel == self.PAGE_TIMEZONE:
                 nex = self.PAGE_TYPE
+                if config.get("skip_partition", False):
+                    sel = nex
             if sel == self.PAGE_USER:
                 nex = self.PAGE_OVERVIEW
             if sel == self.PAGE_TYPE:
@@ -1359,13 +1357,17 @@ class InstallerWindow:
                 nex = self.PAGE_INSTALL
                 self.activate_page(nex, nex)
         else:
-        
+
             if sel == self.PAGE_OVERVIEW:
                 nex = self.PAGE_USER
+                if config.get("skip_user", False):
+                    sel = nex
             if sel == self.PAGE_PARTITIONS:
                 nex = self.PAGE_TYPE
             if sel == self.PAGE_USER:
                 nex = self.PAGE_TYPE
+                if config.get("skip_partition", False):
+                    sel = nex
             if sel == self.PAGE_TYPE:
                 nex = self.PAGE_TIMEZONE
                 if config.get("skip_timezone", False):
@@ -1388,7 +1390,6 @@ class InstallerWindow:
                 self.builder.get_object("button_next").set_sensitive(True)
         self.activate_page(nex, sel, goback)
 
-    @asynchronous
     def show_overview(self):
         def bold(strvar):
             return '<b>' + str(strvar) + '</b>'
@@ -1604,6 +1605,7 @@ class InstallerWindow:
             page_num = self.images.index(i)
             self.slides.add_titled(im, str(page_num), str(page_num))
         self.cur_slide_pos = 0
+        self.slides.show_all()
         #GLib.timeout_add(100, self.set_slide_page)
 
     def set_slide_page(self):
