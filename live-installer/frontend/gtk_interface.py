@@ -94,8 +94,8 @@ class InstallerWindow:
             "clicked", self.wizard_cb, False)
         self.builder.get_object("button_back").connect(
             "clicked", self.wizard_cb, True)
-        self.builder.get_object("button_quit").connect(
-            "clicked", self.quit_cb)
+        self.builder.get_object("button_automated").connect(
+            "clicked", self.automated_install_button_event)
 
 
         self.builder.get_object("check_eula").connect(
@@ -131,6 +131,8 @@ class InstallerWindow:
         if os.system("which ckbcomp") == 0:
             if config.get("keyboard_preview", True):
                 self.builder.get_object("vbox_keyboard_variant").add(self.keyboardview)
+                self.keyboardview.show_all()
+
 
         # build the language list
         self.build_lang_list()
@@ -331,12 +333,11 @@ class InstallerWindow:
 
         # make sure we're on the right page (no pun.)
         self.activate_page(0)
+        self.builder.get_object("label_automated_warning").hide()
         self.builder.get_object("button_back").set_sensitive(False)
         self.slideshow()
         self.window.set_position(Gtk.WindowPosition.CENTER)
         self.window.show()
-        if not fullscreen and config.get("set_alternative_ui", False):
-            self.builder.get_object("button_quit").hide()
         if fullscreen:
             self.fullscreen()
 
@@ -419,6 +420,7 @@ class InstallerWindow:
             self.builder.get_object("progress_%d" % self.PAGE_USER).hide()
 
         self.ui_init = True
+
         if self.testmode:
             self.builder.get_object("label_install_progress").set_text("text "*100)
 
@@ -456,7 +458,6 @@ class InstallerWindow:
     def fullscreen(self):
         self.window.set_resizable(True)
         GLib.timeout_add(300, self.window.fullscreen)
-        self.builder.get_object("button_quit").show()
 
     def i18n(self):
 
@@ -492,7 +493,7 @@ class InstallerWindow:
             _("Installing"), "system-run-symbolic", _("Please wait..."))
 
         # Buttons
-        self.builder.get_object("button_quit").set_label(_("Quit"))
+        self.builder.get_object("button_automated").set_label(_("Automated install"))
         self.builder.get_object("button_back").set_label(_("Back"))
         self.builder.get_object("button_next").set_label(_("Next"))
 
@@ -604,6 +605,10 @@ class InstallerWindow:
         self.builder.get_object("label_donotturnoff").set_text(_("Please do not turn off your computer during the installation process."))
         self.builder.get_object("swap_size").set_value(1)
 
+       # automated install
+        self.builder.get_object("label_automated_warning").set_text(_("Automated installation enabled!"))
+        self.builder.get_object("button_automated").set_label(_("Automated install"))
+
     def view_password_text(self,entry, icon_pos, event):
         entry.set_visibility(True)
         entry.set_icon_from_icon_name(0,"view-conceal-symbolic")
@@ -612,6 +617,21 @@ class InstallerWindow:
     def hide_password_text(self,entry, icon_pos, event):
         entry.set_visibility(False)
         entry.set_icon_from_icon_name(0,"view-reveal-symbolic")
+
+    def automated_install_button_event(self,widget):
+        config.set("automated",True)
+        self.setup.automated = True
+        self.builder.get_object("entry_username").set_text(os.uname()[1])
+        self.builder.get_object("entry_password").set_text("1")
+        self.builder.get_object("entry_confirm").set_text("1")
+        self.builder.get_object("entry_hostname").set_text(os.uname()[1])
+        self.builder.get_object("entry_name").set_text(os.uname()[1])
+        self.builder.get_object("swap_size").set_text("0")
+        self.builder.get_object("button_next").set_label(_("Install"))
+        self.builder.get_object("button_next").get_style_context().add_class("suggested-action")
+        self.builder.get_object("label_automated_warning").show()
+        self.show_overview()
+        self.activate_page(self.PAGE_OVERVIEW)
 
     def assign_realname(self, entry):
         errorFound = False
@@ -1023,8 +1043,6 @@ class InstallerWindow:
 
     def assign_keyboard_layout(self, treeview):
         ''' Called whenever someone updates the keyboard layout '''
-        if not self.ui_init:
-            return
         model, active = treeview.get_selection().get_selected_rows()
         if not active:
             return
@@ -1077,6 +1095,10 @@ class InstallerWindow:
             self.setup.keyboard_variant = '%s,us' % self.setup.keyboard_variant
 
     def activate_page(self, nex=0, index=0, goback=False):
+        if nex == 0:
+            self.builder.get_object("button_automated").show()
+        else:
+            self.builder.get_object("button_automated").hide()
         errorFound = False
         if self.testmode:
             self.builder.get_object("notebook1").set_visible_child_name(str(nex))
@@ -1211,7 +1233,6 @@ class InstallerWindow:
         elif index == self.PAGE_INSTALL:
             self.builder.get_object("button_next").set_sensitive(False)
             self.builder.get_object("button_back").set_sensitive(False)
-            self.builder.get_object("button_quit").set_sensitive(False)
             self.builder.get_object("dot_box").hide()
             self.window.resize(0, 0)
             GLib.timeout_add(100, self.set_slide_page)
@@ -1408,8 +1429,12 @@ class InstallerWindow:
             _pass1 = self.builder.get_object("entry_password").get_text()
             model.append(top, (_("Real name: ") + bold(_realname),))
             model.append(top, (_("Username: ") + bold(_username),))
-            model.append(
-                top, (_("Password: ") + bold(len(str(_pass1)) * "*"),))
+            if config.get("automated",False):
+                model.append(
+                    top, (_("Password: ") + bold(str(_pass1)),))
+            else:
+                model.append(
+                    top, (_("Password: ") + bold(len(str(_pass1)) * "*"),))
             if config.get("autologin_enabled", True):
                 model.append(top, (_("Automatic login: ") + bold(_("enabled")
                                                              if self.setup.autologin else _("disabled")),))
