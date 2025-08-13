@@ -6,7 +6,7 @@ import parted
 import frontend.partitioning as partitioning
 import config
 import shutil
-from utils import run, set_governor, is_cmd
+from utils import run, set_governor, is_cmd, getoutput
 from logger import log, err, inf, set_logfile
 
 gettext.install("live-installer", "/usr/share/locale")
@@ -300,11 +300,12 @@ class InstallerEngine:
         self.update_progress(_("Creating partitions on %s") % self.setup.disk)
         log(" --> Creating partitions on %s" % self.setup.disk)
         disk_device = parted.getDevice(self.setup.disk)
-        # replae this with changeable function
+        # replace this with changeable function
         partitioning.full_disk_format(disk_device,
             create_boot = (self.auto_boot_partition is not None),
             create_swap = (self.auto_swap_partition is not None),
-            swap_size   = self.setup.swap_size)
+            swap_size   = self.setup.swap_size,
+            rootfs_type = self.setup.fstype)
 
         # Encrypt root partition
         if self.setup.luks:
@@ -341,9 +342,10 @@ class InstallerEngine:
                 self.run("swapon /dev/{}/swap".format(lvm))
                 self.auto_swap_partition = "/dev/{}/swap".format(lvm)
             self.auto_root_partition = "/dev/{}/root".format(lvm)
+            self.do_mount(self.auto_root_partition, "/target", "ext4", None)
+        else:
+            self.do_mount(self.auto_root_partition, "/target", self.setup.fstype, None)
 
-
-        self.do_mount(self.auto_root_partition, "/target", "ext4", None)
         if (self.auto_boot_partition is not None):
             self.run("mkdir -p /target/boot")
             self.do_mount(self.auto_boot_partition,
@@ -396,20 +398,11 @@ class InstallerEngine:
 
     def mount_partitions(self):
         # Sort partitions for mount order
-        partitions_sorted = []
-        mountpoint_sorted = []
-        for partition in self.setup.partitions:
-            mountpoint_sorted.append(partition.mount_as)
-        mountpoint_sorted.sort()
-        for dir in mountpoint_sorted:
-            for partition in self.setup.partitions:
-                if partition.mount_as == dir:
-                    partitions_sorted.append(partition)
-        self.setup.partitions = partitions_sorted
+        self.setup.partitions.sort(key = lambda x : x.mount_as, reverse=False)
         # Mount the target partition
         for partition in self.setup.partitions:
-            if(partition.mount_as not in ["", None, "swap"]):
-                if partition.mount_as == "/":
+            if(partition.mount_as not in [None, "swap"] and partition.subvolumes != [] and not self.is_subvolume_has_mountpoint(partition.subvolumes,"")) or (partition.mount_as not in ["", None, "swap"]):
+                if partition.mount_as == "/" or self.is_subvolume_has_mountpoint(partition.subvolumes, "/"):
                     self.update_progress(_("Mounting %(partition)s on %(mountpoint)s") % {
                                          'partition': partition.path, 'mountpoint': "/target/"})
                     log(" ------ Mounting partition %s on %s" %
@@ -417,21 +410,31 @@ class InstallerEngine:
                     fs = partition.type
                     if 0 == self.do_mount(partition.path, "/target", partition.type, None):
                         if fs == "btrfs":
-                            # Create subvolumes for Btrfs
-                            os.system("btrfs subvolume create /target/@")
-                            os.system("btrfs subvolume list -p /target")
-                            log(" ------ Umount btrfs to remount subvolume @")
-                            os.system("umount --force /target")
-                            self.do_mount(partition.path, "/target", fs, "subvol=@")
-                            if not self.setup_has_dedicated_home():
-                                # If there is no dedicated home partition, add a @home subvolume to /
-                                os.system("mkdir -p /target/home")
-                                self.do_mount(partition.path, "/target/home", fs, None)
-                                os.system("btrfs subvolume create /target/home/@home")
-                                os.system("btrfs subvolume list -p /target/home")
-                                log(" ------- Umount btrfs to remount subvolume @home")
-                                os.system("umount --force /target/home")
-                                self.do_mount(partition.path, "/target/home", fs, "subvol=@home")
+                            log(" ------ Found btrfs filesystem")
+                            if partition.subvolumes != []:
+                                # Create subvolumes
+                                partition.subvolumes.sort(key = lambda x : x.name, reverse=False)
+                                for subvolume in partition.subvolumes:
+                                    if subvolume.format:
+                                        os.system("btrfs subvolume delete /target/{}".format(subvolume.name))
+                                        subvolume.exists_on_disk = False
+                                    if subvolume.exists_on_disk:
+                                        continue
+                                    log(" ------ Creating btrfs subvolume {} on /target/{}".format(subvolume.name,subvolume.mount_as))
+                                    # btrfs-progs have a parameter to create subvolumes with parent directories but in a version newer(v6.5.3) than the debian 12 package(v6.2)
+                                    # you can replace this with "btrfs subvolume create -p" when next debian release(trixie) based pardus is out 
+                                    if "/" in subvolume.name:
+                                        x = subvolume.name.rsplit("/", 1)
+                                        os.system("mkdir -p /target/{}".format(x[0]))
+
+                                    os.system("btrfs subvolume create /target/{}".format(subvolume.name))
+
+                                os.system("umount --force /target")
+                                # Mount subvolumes
+                                partition.subvolumes.sort(key = lambda x : x.mount_as, reverse=False)
+                                for subvolume in partition.subvolumes:
+                                    log(" ------ Mounting btrfs subvolume {} on /target{}".format(subvolume.name,subvolume.mount_as))
+                                    self.do_mount(partition.path, "/target{}".format(subvolume.mount_as), fs, "subvol={}".format(subvolume.name),"--mkdir") 
                     else:
                         self.error_message(
                             "Cannot mount rootfs (type: {}): {}".format(partition.type, partition.path))
@@ -444,29 +447,45 @@ class InstallerEngine:
             if os.path.exists(target):
                  self.run("rm -rf {}".format(target),vital=False)
             os.mkdir(target)
+            subvols = []
+            if getoutput("stat -f -c %T /target") == b'btrfs':
+                subvols = getoutput(
+                    "LC_ALL=en_US.UTF-8 btrfs subvolume list /target | awk -F ' path ' '{ print $2 }'").decode("utf-8").strip().split("\n")
             for old in olds:
-                self.run("mv /target/{0} {1}/{0}".format(old,target),vital=False)
+                notOld = False
+                for s in subvols:
+                    if old in s:
+                        notOld = True
+                        break
+                if not notOld:
+                    self.run("mv /target{0} {1}/{0}".format(old,target),vital=False)
 
 
         # Mount the other partitions
         for partition in self.setup.partitions:
-            if(partition.mount_as not in [ None, "/", "swap", ""]):
+            if(partition.mount_as not in [ None, "/", "swap"] and partition.subvolumes != [] and not self.is_subvolume_has_mountpoint(partition.subvolumes,"") and not self.is_subvolume_has_mountpoint(partition.subvolumes,"/")) or (partition.mount_as not in ["", None, "/", "swap"]):
                 log(" ------ Mounting %s on %s" %
                     (partition.path, "/target" + partition.mount_as))
                 self.run("mkdir -p /target" + partition.mount_as)
+                if partition.subvolumes != []:
+                    tempdir = getoutput("mktemp -d").decode("utf-8").strip()
+                    self.do_mount(partition.path, tempdir, partition.type, None)
+                    for subvolume in partition.subvolumes:
+                        os.system("btrfs subvolume create {}/{}".format(tempdir,subvolume.name))
+                    os.system("umount --force {}".format(tempdir))
+
                 if partition.type == "fat16" or partition.type == "fat32":
                     fs = "vfat"
                 else:
                     fs = partition.type
-                self.do_mount(partition.path, "/target" +
-                              partition.mount_as, fs, None)
-                if partition.mount_as == "/home" and fs == "btrfs":
-                    # Dedicated home partition with Btrfs, needs a @home subvolume
-                    os.system("btrfs subvolume create /target/home/@home")
-                    os.system("btrfs subvolume list -p /target/home")
-                    print(" ------- Umount btrfs to remount subvolume @home")
-                    os.system("umount --force /target/home")
-                    self.do_mount(partition.path, "/target/home", fs, "subvol=@home")
+
+                if partition.mount_as != "":
+                    self.do_mount(partition.path, "/target" +
+                                  partition.mount_as, fs, None)
+                elif partition.subvolumes != []:
+                    for subvolume in partition.subvolumes:
+                        self.do_mount(partition.path, "/target" +
+                                      subvolume.mount_as, fs, "subvol={}".format(subvolume.name),"--mkdir")
 
     def get_blkid(self, path):
         uuid = path  # If we can't find the UUID we use the path
@@ -482,14 +501,11 @@ class InstallerEngine:
                 break
         return uuid
 
-    def setup_has_dedicated_home(self):
-        # Find out if there is a dedicated home partition
-        has_dedicated_home = False
-        for partition in self.setup.partitions:
-            if partition.mount_as == "/home":
-                has_dedicated_home = True
-                break
-        return has_dedicated_home
+    def is_subvolume_has_mountpoint(self, subvolumes, mountpoint):
+        for subvolume in subvolumes:
+            if subvolume.mount_as == mountpoint:
+                return True
+        return False
 
     def write_fstab(self):
         # write the /etc/fstab
@@ -512,8 +528,8 @@ class InstallerEngine:
                                 self.auto_swap_partition)
             else:
                 fstab.write("# %s\n" % self.auto_root_partition)
-                fstab.write("%s /  ext4 defaults 0 1\n" %
-                            self.get_blkid(self.auto_root_partition))
+                fstab.write("%s /  %s defaults 0 1\n" %
+                            (self.get_blkid(self.auto_root_partition), self.setup.fstype))
                 fstab.write("# %s\n" % self.auto_swap_partition)
                 if self.auto_swap_partition:
                     fstab.write("%s none   swap sw 0 0\n" %
@@ -541,13 +557,8 @@ class InstallerEngine:
                         rw="ro"
                     if fs == "fat16" or fs == "fat32":
                         fs = "vfat"
-                    if fs == "btrfs" and partition.mount_as == "/":
-                        fstab_mount_options = "defaults,subvol=@"
-                    elif fs == "btrfs" and self.setup_has_dedicated_home():
-                        fstab_mount_options = "defaults,subvol=@home"
-                    else:
-                        fstab_mount_options = "defaults,{}".format(rw)
 
+                    fstab_mount_options = "defaults,{}".format(rw)
                     partition_uuid = self.get_blkid(partition.path)
                     if(fs == "swap"):
                         fstab.write("%s swap swap sw 0 0\n" %
@@ -556,9 +567,17 @@ class InstallerEngine:
                         fstab.write("%s %s %s %s %s %s\n" % (
                             partition_uuid, partition.mount_as, fs, fstab_mount_options, "0", fstab_fsck_option))
 
-                    if fs == "btrfs" and partition.mount_as == "/" and not self.setup_has_dedicated_home():
-                        fstab.write("%s %s %s %s %s %s\n" % (
-                            partition_uuid, "/home", "btrfs", "defaults,subvol=@home", "0", "0"))
+                if partition.subvolumes != [] and partition.type == "btrfs":
+                    for subvolume in partition.subvolumes:
+                        fstab.write("# %s\n" % (partition.path))
+                        rw="rw"
+                        if partition.read_only:
+                            rw="ro"
+                        fstab_mount_options = "defaults,subvol={},{}".format(subvolume.name,rw)
+
+                        partition_uuid = self.get_blkid(partition.path)
+                        fstab.write("%s %s %s %s 0 0\n" % (
+                            partition_uuid, subvolume.mount_as, partition.type, fstab_mount_options))
 
         if self.setup.luks:
             self.run("echo '{}   {}   none   luks,tries=3' >> /target/etc/crypttab".format(
@@ -762,6 +781,11 @@ class InstallerEngine:
         log(config.get("remove_packages", ["17g-installer"]))
         self.run("chroot||yes | {}".format(config.package_manager(
             "remove_package_with_unusing_deps", config.get("remove_packages", ["17g-installer"]))))
+
+        log(config.get("remove_packages_finally", []))
+        self.run("chroot||yes | {}".format(config.package_manager(
+            "remove_package_with_unusing_deps", config.get("remove_packages_finally", []))))
+
         self.run("chroot|| rm -rf /lib/live-installer",vital=False)
 
 
@@ -825,18 +849,19 @@ class InstallerEngine:
                     break
 
 
-        # Update if enabled
-        if self.setup.install_updates:
-            self.update_progress(_("Trying to install updates"), True)
-            self.run_and_update(config.package_manager(
-                "full_system_update"),True)
-
         # Custom commands
         self.do_hook_commands("post_install_hook")
 
         # Customization with network
         if config.get("customizer_address","localhost") != "localhost":
             self.run("curl {} | chroot /target bash".format(config.get("customizer_address","localhost")),vital=False)
+
+        # Update if enabled
+        if self.setup.install_updates:
+            self.update_progress(_("Trying to install updates"), True)
+            self.run_and_update(config.package_manager(
+                "full_system_update"),True)
+
 
         # now unmount it
         log(" --> Unmounting partitions")
@@ -894,7 +919,7 @@ class InstallerEngine:
             err("!No /target/boot/grub/grub.cfg file found!")
             return False
 
-    def do_mount(self, device, dest, typevar="auto", options=None):
+    def do_mount(self, device, dest, typevar="auto", options=None, args=""):
         ''' Mount a filesystem '''
         if typevar == "none" or typevar == "":
             return 0
@@ -902,9 +927,9 @@ class InstallerEngine:
             os.sync()
             time.sleep(0.1)
         if(options is not None):
-            cmd = "mount -o %s -t %s %s %s" % (options, typevar, device, dest)
+            cmd = "mount -o %s -t %s %s %s %s" % (options, typevar, device, dest, args)
         else:
-            cmd = "mount -t %s %s %s" % (typevar, device, dest)
+            cmd = "mount -t %s %s %s %s" % (typevar, device, dest, args)
         return self.run(cmd)
 
     def do_unmount(self, mountpoint):
@@ -962,6 +987,7 @@ class Setup(object):
     replace_windows = False
     expert_mode = False
     disk = None
+    fstype = None
     diskname = None
     passphrase1 = None
     passphrase2 = None
